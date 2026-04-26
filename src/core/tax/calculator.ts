@@ -8,6 +8,7 @@ import {
   type EnrichedRawDividend,
   type EnrichedTrade,
   type EnrichedWithholdingTax,
+  type OpenLot,
   type Pit38Fields,
   type PitZgFields,
   type PriorYearLoss,
@@ -61,6 +62,8 @@ export interface TaxCalculationResult {
   pitZg: PitZgFields[];
   /** Per-year breakdown of how prior-year losses were applied. */
   lossDeduction: ApplyLossCarryForwardResult;
+  /** Lots remaining open at end of taxPeriod — feeds next year's carry-ins. */
+  openLots: OpenLot[];
 }
 
 /** Orchestrate full tax calculation pipeline */
@@ -79,13 +82,15 @@ export function calculateTaxes(args: CalculateTaxesArgs): TaxCalculationResult {
 
   const countryMap = args.symbolCountryMap ?? new Map<string, string>();
 
-  const tradeResults = calculateCapitalGains({
+  const capitalGains = calculateCapitalGains({
     trades,
     corporateActions,
     carryInPositions,
     taxPeriod,
     symbolCountryMap: countryMap,
   });
+  const tradeResults = capitalGains.trades;
+  const openLots = capitalGains.openLots;
 
   const dividendResults = calculateDividends({
     dividends,
@@ -137,6 +142,7 @@ export function calculateTaxes(args: CalculateTaxesArgs): TaxCalculationResult {
     pit38,
     pitZg,
     lossDeduction,
+    openLots,
   };
 }
 

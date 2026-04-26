@@ -32,14 +32,15 @@ function makeTrade(overrides: Partial<EnrichedTrade>): EnrichedTrade {
 }
 
 void describe('calculateCapitalGains', () => {
-  void it('returns empty array for empty inputs', () => {
+  void it('returns empty results for empty inputs', () => {
     const result = calculateCapitalGains({
       trades: [],
       corporateActions: [],
       carryInPositions: [],
       taxPeriod: taxPeriod2024,
     });
-    assert.deepEqual(result, []);
+    assert.deepEqual(result.trades, []);
+    assert.deepEqual(result.openLots, []);
   });
 
   void it('calculates simple buy and sell', () => {
@@ -62,7 +63,7 @@ void describe('calculateCapitalGains', () => {
       commissionExchangeRate: 4.1,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy, sell],
       corporateActions: [],
       carryInPositions: [],
@@ -124,7 +125,7 @@ void describe('calculateCapitalGains', () => {
       commission: 0,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy1, buy2, sell],
       corporateActions: [],
       carryInPositions: [],
@@ -165,7 +166,7 @@ void describe('calculateCapitalGains', () => {
       commission: 0,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy, sell1, sell2],
       corporateActions: [],
       carryInPositions: [],
@@ -205,7 +206,7 @@ void describe('calculateCapitalGains', () => {
       commission: 0,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy, sell],
       corporateActions: [split],
       carryInPositions: [],
@@ -239,7 +240,7 @@ void describe('calculateCapitalGains', () => {
       commission: 0,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy, sell],
       corporateActions: [],
       carryInPositions: [],
@@ -267,7 +268,7 @@ void describe('calculateCapitalGains', () => {
       commission: 0,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [sell],
       corporateActions: [],
       carryInPositions: [{ symbol: 'AAPL', quantity: 100, year: 2024 }],
@@ -298,7 +299,7 @@ void describe('calculateCapitalGains', () => {
       commission: 0,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy, sell],
       corporateActions: [],
       carryInPositions: [],
@@ -326,7 +327,7 @@ void describe('calculateCapitalGains', () => {
       exchangeRate: 0,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy],
       corporateActions: [],
       carryInPositions: [],
@@ -378,7 +379,7 @@ void describe('calculateCapitalGains', () => {
       commission: 0,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy, sell],
       corporateActions: [],
       carryInPositions: [],
@@ -429,7 +430,7 @@ void describe('calculateCapitalGains', () => {
       commission: 0,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy, sell],
       corporateActions: [merger],
       carryInPositions: [],
@@ -461,7 +462,7 @@ void describe('calculateCapitalGains', () => {
       commission: 0,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy, sell],
       corporateActions: [],
       carryInPositions: [],
@@ -494,7 +495,7 @@ void describe('calculateCapitalGains', () => {
       commission: 10,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy, sell],
       corporateActions: [],
       carryInPositions: [],
@@ -567,7 +568,7 @@ void describe('calculateCapitalGains', () => {
       lotId: '1000001',
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buy71, buy146, sell146, sell71],
       corporateActions: [],
       carryInPositions: [],
@@ -653,7 +654,7 @@ void describe('calculateCapitalGains', () => {
       lotId: 'A',
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buyA, buyB, sellB, sellA],
       corporateActions: [],
       carryInPositions: [],
@@ -723,7 +724,7 @@ void describe('calculateCapitalGains — cross-year FIFO', () => {
       commissionExchangeRate: 4.2,
     });
 
-    const result = calculateCapitalGains({
+    const { trades: result } = calculateCapitalGains({
       trades: [buyPriorYear, sellCurrentYear],
       corporateActions: [],
       carryInPositions: [],
@@ -754,5 +755,206 @@ void describe('calculateCapitalGains — cross-year FIFO', () => {
       Math.abs(result[0].taxPln - 2964) < 0.01,
       `taxPln: ${String(result[0].taxPln)}`,
     );
+  });
+});
+
+void describe('calculateCapitalGains — openLots snapshot', () => {
+  void it('emits remaining lots after partial sell with full PLN cost basis', () => {
+    const buy = makeTrade({
+      symbol: 'AAPL',
+      isin: 'US0378331005',
+      datetime: new Date(2024, 0, 10),
+      quantity: 100,
+      price: 150,
+      type: 'buy',
+      commission: 0,
+      exchangeRate: 4.0,
+    });
+    const sell = makeTrade({
+      symbol: 'AAPL',
+      isin: 'US0378331005',
+      datetime: new Date(2024, 5, 10),
+      quantity: 30,
+      price: 160,
+      proceeds: 4800,
+      type: 'sell',
+      commission: 0,
+      exchangeRate: 4.1,
+    });
+
+    const result = calculateCapitalGains({
+      trades: [buy, sell],
+      corporateActions: [],
+      carryInPositions: [],
+      taxPeriod: taxPeriod2024,
+    });
+
+    assert.equal(result.openLots.length, 1);
+    const lot = result.openLots[0];
+    assert.equal(lot.symbol, 'AAPL');
+    assert.equal(lot.isin, 'US0378331005');
+    assert.equal(lot.quantity, 70);
+    // costPerSharePln = 150 * 4.0 = 600 — preserved from buy
+    assert.ok(Math.abs(lot.costPerSharePln - 600) < 0.001);
+    assert.ok(lot.acquisitionDate instanceof Date);
+  });
+
+  void it('emits no openLots when all positions are fully closed', () => {
+    const buy = makeTrade({
+      datetime: new Date(2024, 0, 10),
+      quantity: 100,
+      price: 150,
+      type: 'buy',
+      commission: 0,
+    });
+    const sell = makeTrade({
+      datetime: new Date(2024, 5, 10),
+      quantity: 100,
+      price: 160,
+      proceeds: 16000,
+      type: 'sell',
+      commission: 0,
+    });
+
+    const result = calculateCapitalGains({
+      trades: [buy, sell],
+      corporateActions: [],
+      carryInPositions: [],
+      taxPeriod: taxPeriod2024,
+    });
+
+    assert.deepEqual(result.openLots, []);
+  });
+
+  void it('emits one openLot per FIFO lot (300 + 200 stay separate)', () => {
+    const buy1 = makeTrade({
+      datetime: new Date(2023, 7, 22),
+      quantity: 300,
+      price: 7.583,
+      type: 'buy',
+      commission: 0,
+    });
+    const buy2 = makeTrade({
+      datetime: new Date(2023, 8, 11),
+      quantity: 200,
+      price: 7.889,
+      type: 'buy',
+      commission: 0,
+    });
+
+    const result = calculateCapitalGains({
+      trades: [buy1, buy2],
+      corporateActions: [],
+      carryInPositions: [],
+      taxPeriod: {
+        year: 2023,
+        from: new Date(2023, 0, 1),
+        to: new Date(2023, 11, 31),
+      },
+    });
+
+    assert.equal(result.openLots.length, 2);
+    assert.equal(result.openLots[0].quantity, 300);
+    assert.equal(result.openLots[1].quantity, 200);
+  });
+});
+
+void describe('calculateCapitalGains — carry-in cost basis', () => {
+  void it('uses costPerSharePln from carry-in when sell consumes it', () => {
+    // Carry-in: 100 shares @ 600 PLN/share cost basis (i.e., 60 000 PLN total)
+    // Sell:     100 shares @ 180 USD × 4.2 = 75 600 PLN proceeds
+    // Expected gain: 15 600 PLN
+    const sell = makeTrade({
+      symbol: 'AAPL',
+      isin: 'US0378331005',
+      datetime: new Date(2024, 5, 20),
+      quantity: 100,
+      price: 180,
+      proceeds: 18000,
+      type: 'sell',
+      commission: 0,
+      exchangeRate: 4.2,
+    });
+
+    const { trades: result } = calculateCapitalGains({
+      trades: [sell],
+      corporateActions: [],
+      carryInPositions: [
+        {
+          symbol: 'AAPL',
+          isin: 'US0378331005',
+          quantity: 100,
+          year: 2023,
+          costPerSharePln: 600,
+          commissionPerSharePln: 0,
+        },
+      ],
+      taxPeriod: taxPeriod2024,
+    });
+
+    assert.equal(result.length, 1);
+    assert.ok(Math.abs(result[0].costPln - 60000) < 0.01);
+    assert.ok(Math.abs(result[0].gainLossPln - 15600) < 0.01);
+  });
+
+  void it('falls back to 0 cost when carry-in lacks costPerSharePln (legacy MtM behavior)', () => {
+    const sell = makeTrade({
+      datetime: new Date(2024, 5, 20),
+      quantity: 100,
+      price: 180,
+      proceeds: 18000,
+      type: 'sell',
+      commission: 0,
+      exchangeRate: 4.2,
+    });
+
+    const { trades: result } = calculateCapitalGains({
+      trades: [sell],
+      corporateActions: [],
+      carryInPositions: [{ symbol: 'AAPL', quantity: 100, year: 2023 }],
+      taxPeriod: taxPeriod2024,
+    });
+
+    assert.equal(result[0].costPln, 0);
+  });
+
+  void it('matches a sell to a carry-in keyed by ISIN even when symbols differ (NDIA/QDV5 regression)', () => {
+    // Two listings of the same ETF (NDIA on LSE, QDV5 on IBIS2) share an ISIN.
+    // The 2024 sell of NDIA should consume the carry-in seeded as QDV5 because
+    // they key on the same ISIN.
+    const sellNdia = makeTrade({
+      symbol: 'NDIA',
+      isin: 'IE00BZCQB185',
+      datetime: new Date(2024, 10, 19),
+      quantity: 500,
+      price: 9.434,
+      proceeds: 4717,
+      type: 'sell',
+      commission: 0,
+      exchangeRate: 4.0,
+    });
+
+    const { trades: result } = calculateCapitalGains({
+      trades: [sellNdia],
+      corporateActions: [],
+      carryInPositions: [
+        {
+          symbol: 'QDV5',
+          isin: 'IE00BZCQB185',
+          quantity: 500,
+          year: 2023,
+          costPerSharePln: 30,
+          commissionPerSharePln: 0,
+        },
+      ],
+      taxPeriod: taxPeriod2024,
+    });
+
+    assert.equal(result.length, 1);
+    assert.equal(result[0].quantity, 500);
+    // costPln = 500 * 30 = 15 000
+    assert.ok(Math.abs(result[0].costPln - 15000) < 0.01);
+    // proceedsPln = 4717 * 4.0 = 18 868
+    assert.ok(Math.abs(result[0].proceedsPln - 18868) < 0.01);
   });
 });

@@ -98,6 +98,33 @@ export interface CarryInPosition {
   isin?: string;
   quantity: number;
   year: number;
+  /**
+   * PLN cost per share at acquisition. When set, FIFO seeds the lot with this
+   * cost so that a sell against this carry-in produces the correct gain.
+   * When omitted, defaults to 0 (legacy quantity-only carry-ins from MtM).
+   */
+  costPerSharePln?: number;
+  /** PLN commission per share at acquisition. Defaults to 0 when omitted. */
+  commissionPerSharePln?: number;
+  /** Sub-lot identifier (preserved across years; pairs with trade.lotId). */
+  lotId?: string;
+  /** Original acquisition datetime (informational; not used by FIFO matching). */
+  acquisitionDate?: Date;
+}
+
+/**
+ * A lot remaining in the FIFO queue at the end of a tax period. Persisted on
+ * the year's TaxSummary and consumed as carry-ins by the next year's session.
+ */
+export interface OpenLot {
+  symbol: string;
+  isin?: string;
+  lotId?: string;
+  quantity: number;
+  costPerSharePln: number;
+  commissionPerSharePln: number;
+  /** Original acquisition datetime (informational; not used by FIFO matching). */
+  acquisitionDate?: Date;
 }
 
 /**
@@ -308,6 +335,11 @@ export interface TaxSummary {
   capitalGainAfterLcfPln: number;
   /** Post-LCF capital gain tax (raw, unrounded): capitalGainAfterLcfPln * 0.19. */
   capitalGainTaxPostLcfPln: number;
+  /**
+   * Lots still open at end of the tax period. Used by the next year's session
+   * to seed FIFO carry-ins with full PLN cost basis.
+   */
+  openLots?: OpenLot[];
 }
 
 /**

@@ -6,6 +6,7 @@ import type {
   CreditInterestResult,
   DividendResult,
   ImportWarning,
+  OpenLot,
   Pit38Fields,
   PitZgFields,
   PriorYearLoss,
@@ -141,6 +142,11 @@ export interface TaxSummaryRecord {
    * when the calculation considered prior-year losses.
    */
   lossDeduction?: ApplyLossCarryForwardResult;
+  /**
+   * Lots still open at end of the tax period. Read by the next year's session
+   * to seed FIFO carry-ins with full PLN cost basis.
+   */
+  openLots?: OpenLot[];
 }
 
 export interface NbpRateRecord {

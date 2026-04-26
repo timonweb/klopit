@@ -3,6 +3,7 @@ import {
   type CarryInPosition,
   type EnrichedCorporateAction,
   type EnrichedTrade,
+  type OpenLot,
   type TaxPeriod,
   type TradeResult,
 } from '../types.js';
@@ -18,6 +19,19 @@ export interface CalculateCapitalGainsArgs {
   carryInPositions: CarryInPosition[];
   taxPeriod: TaxPeriod;
   symbolCountryMap?: Map<string, string>;
+}
+
+export interface CalculateCapitalGainsResult {
+  trades: TradeResult[];
+  /** FIFO lots remaining open at end of the tax period. */
+  openLots: OpenLot[];
+}
+
+interface LotMeta {
+  symbol: string;
+  isin?: string;
+  lotId?: string;
+  acquisitionDate?: Date;
 }
 
 type TimelineEvent =
@@ -54,20 +68,32 @@ function getOrCreateLots(
 /** FIFO-based capital gains calculator */
 export function calculateCapitalGains(
   args: CalculateCapitalGainsArgs,
-): TradeResult[] {
+): CalculateCapitalGainsResult {
   const { trades, corporateActions, carryInPositions, taxPeriod } = args;
   const symbolCountryMap = args.symbolCountryMap ?? new Map<string, string>();
   const lotQueues = new Map<string, FifoLot[]>();
+  // Per-key metadata for converting residual lots into OpenLot records at the
+  // end. Records the symbol/isin/lotId/acquisitionDate of the last source that
+  // populated each key (carry-in, buy trade, or merger target).
+  const lotMeta = new Map<string, LotMeta>();
   const results: TradeResult[] = [];
 
-  // Seed carry-in positions (cost claimed in prior years)
+  // Seed carry-in positions (cost claimed in prior years).
+  // When the carry-in carries cost basis (from a prior session's openLots),
+  // preserve it; otherwise fall back to 0 (legacy quantity-only carry-ins).
   for (const pos of carryInPositions) {
     const key = lotKey(pos);
     const lots = getOrCreateLots(lotQueues, key);
     lots.push({
       quantity: pos.quantity,
-      costPerSharePln: 0,
-      commissionPerSharePln: 0,
+      costPerSharePln: pos.costPerSharePln ?? 0,
+      commissionPerSharePln: pos.commissionPerSharePln ?? 0,
+    });
+    lotMeta.set(key, {
+      symbol: pos.symbol,
+      isin: pos.isin,
+      lotId: pos.lotId,
+      acquisitionDate: pos.acquisitionDate,
     });
   }
 
@@ -112,6 +138,7 @@ export function calculateCapitalGains(
       processAction({
         action: event.action,
         lotQueues,
+        lotMeta,
         results,
         taxPeriod,
         symbolCountryMap,
@@ -120,6 +147,7 @@ export function calculateCapitalGains(
       processTrade({
         trade: event.trade,
         lotQueues,
+        lotMeta,
         results,
         taxPeriod,
         symbolCountryMap,
@@ -127,17 +155,37 @@ export function calculateCapitalGains(
     }
   }
 
-  return results;
+  // Flatten remaining lots into OpenLot records keyed by symbol/isin/lotId.
+  const openLots: OpenLot[] = [];
+  for (const [key, lots] of lotQueues) {
+    const meta = lotMeta.get(key);
+    if (!meta) continue;
+    for (const lot of lots) {
+      if (lot.quantity <= 0) continue;
+      openLots.push({
+        symbol: meta.symbol,
+        isin: meta.isin,
+        lotId: meta.lotId,
+        quantity: lot.quantity,
+        costPerSharePln: lot.costPerSharePln,
+        commissionPerSharePln: lot.commissionPerSharePln,
+        acquisitionDate: meta.acquisitionDate,
+      });
+    }
+  }
+
+  return { trades: results, openLots };
 }
 
 function processAction(args: {
   action: EnrichedCorporateAction;
   lotQueues: Map<string, FifoLot[]>;
+  lotMeta: Map<string, LotMeta>;
   results: TradeResult[];
   taxPeriod: TaxPeriod;
   symbolCountryMap: Map<string, string>;
 }): void {
-  const { action, lotQueues } = args;
+  const { action, lotQueues, lotMeta } = args;
   const key = lotKey(action);
   const lots = lotQueues.get(key);
 
@@ -161,8 +209,9 @@ function processAction(args: {
       newSharesValue: action.newSharesValue,
     });
 
-    // Remove old symbol lots
+    // Remove old symbol lots and metadata
     lotQueues.delete(key);
+    lotMeta.delete(key);
 
     // Move new lots to target symbol
     if (
@@ -176,6 +225,11 @@ function processAction(args: {
       ).toUpperCase();
       const targetLots = getOrCreateLots(lotQueues, targetKey);
       targetLots.push(...mergerResult.newLots);
+      lotMeta.set(targetKey, {
+        symbol: action.targetSymbol ?? action.symbol,
+        isin: action.targetIsin,
+        acquisitionDate: action.datetime,
+      });
     }
 
     // Record cash proceeds as synthetic sell (if in tax period)
@@ -213,11 +267,12 @@ function processAction(args: {
 function processTrade(args: {
   trade: EnrichedTrade;
   lotQueues: Map<string, FifoLot[]>;
+  lotMeta: Map<string, LotMeta>;
   results: TradeResult[];
   taxPeriod: TaxPeriod;
   symbolCountryMap: Map<string, string>;
 }): void {
-  const { trade, lotQueues, results, taxPeriod } = args;
+  const { trade, lotQueues, lotMeta, results, taxPeriod } = args;
   const key = lotKey(trade);
   const lots = getOrCreateLots(lotQueues, key);
 
@@ -231,6 +286,12 @@ function processTrade(args: {
       quantity: trade.quantity,
       costPerSharePln,
       commissionPerSharePln,
+    });
+    lotMeta.set(key, {
+      symbol: trade.symbol,
+      isin: trade.isin,
+      lotId: trade.lotId,
+      acquisitionDate: trade.datetime,
     });
 
     if (isInPeriod({ datetime: trade.datetime, taxPeriod })) {

@@ -4,6 +4,7 @@ import {
 } from '../../core/tax/calculator.js';
 import { isinToCountry } from '../../core/tax/country.js';
 import type {
+  CarryInPosition,
   EnrichedCorporateAction,
   EnrichedCreditInterest,
   EnrichedRawDividend,
@@ -40,7 +41,7 @@ export async function calculateSessionTaxes(args: {
     creditInterests,
     withholdingTaxes,
     corporateActions,
-    carryInPositions,
+    storedCarryIns,
   ] = await Promise.all([
     db.trades.where('sessionId').equals(args.sessionId).toArray(),
     db.dividends.where('sessionId').equals(args.sessionId).toArray(),
@@ -49,6 +50,26 @@ export async function calculateSessionTaxes(args: {
     db.corporateActions.where('sessionId').equals(args.sessionId).toArray(),
     db.carryInPositions.where('sessionId').equals(args.sessionId).toArray(),
   ]);
+
+  // 2a. Merge prior-year session's openLots as carry-ins (with full PLN cost
+  // basis). Stored carry-ins with cost basis (user-entered) win over the
+  // snapshot; stored carry-ins without cost basis (parser-derived MtM
+  // placeholders) defer to the snapshot — otherwise the placeholder's 0 PLN
+  // basis would shadow the real numbers from the prior year.
+  const inheritedCarryIns = await loadInheritedCarryIns({
+    currentYear: session.year,
+    storedCarryIns,
+  });
+  const inheritedKeys = new Set(inheritedCarryIns.map((c) => carryInKey(c)));
+  const usefulStoredCarryIns = storedCarryIns.filter((c) => {
+    if (c.costPerSharePln !== undefined) return true; // user-entered → keep
+    // Placeholder (no cost basis): drop if a snapshot covers this key.
+    return !inheritedKeys.has(carryInKey(c));
+  });
+  const carryInPositions: CarryInPosition[] = [
+    ...inheritedCarryIns,
+    ...usefulStoredCarryIns,
+  ];
 
   // 3. Build symbol → country map
   const overrides = await db.symbolCountryOverrides
@@ -280,6 +301,7 @@ export async function calculateSessionTaxes(args: {
         pit38: result.pit38,
         pitZg: result.pitZg,
         lossDeduction: result.lossDeduction,
+        openLots: result.openLots,
       });
 
       // 13. Update session status
@@ -293,7 +315,106 @@ export async function calculateSessionTaxes(args: {
     },
   );
 
+  // 14. Mark next-year session(s) stale — their inherited carry-ins changed.
+  await markNextYearSessionsStale({
+    currentYear: session.year,
+  });
+
   return result;
+}
+
+/**
+ * When a session's calculation finishes, bump dataUpdatedAt on any session
+ * whose year is the next one — its inherited carry-ins (read from this
+ * session's openLots) may have changed, so the stale banner should fire.
+ */
+async function markNextYearSessionsStale(args: {
+  currentYear: number;
+}): Promise<void> {
+  const nextSessions = await db.sessions
+    .where('year')
+    .equals(args.currentYear + 1)
+    .toArray();
+  const now = new Date();
+  await Promise.all(
+    nextSessions.map((s) =>
+      updateSession({ id: s.id, changes: { dataUpdatedAt: now } }),
+    ),
+  );
+}
+
+/**
+ * Load carry-ins inherited from the prior-year session's openLots snapshot.
+ *
+ * Picks the most recently updated session whose `year = currentYear - 1`. If
+ * that session hasn't been calculated yet, calculates it transparently first
+ * (recursively — so a chain of years all get computed in one user action).
+ * Reads its `taxSummaries.openLots` and converts each into a CarryInPosition
+ * with full PLN cost basis. Stored carry-ins with cost basis (user-entered)
+ * shadow inherited lots for the same key; stored carry-ins without cost
+ * basis (parser MtM placeholders) defer to the snapshot.
+ */
+async function loadInheritedCarryIns(args: {
+  currentYear: number;
+  storedCarryIns: CarryInPosition[];
+}): Promise<CarryInPosition[]> {
+  const priorSessions = await db.sessions
+    .where('year')
+    .equals(args.currentYear - 1)
+    .toArray();
+
+  if (priorSessions.length === 0) return [];
+
+  // Prefer most recently calculated; fall back to most recently updated.
+  priorSessions.sort(
+    (a, b) =>
+      (b.calculatedAt?.getTime() ?? b.updatedAt.getTime()) -
+      (a.calculatedAt?.getTime() ?? a.updatedAt.getTime()),
+  );
+  const priorSession = priorSessions[0];
+
+  // If the prior session has no snapshot yet, calculate it now so we can
+  // inherit. Year strictly decreases, so recursion terminates.
+  let summary = await db.taxSummaries.get(priorSession.id);
+  if (!summary?.openLots) {
+    await calculateSessionTaxes({ sessionId: priorSession.id });
+    summary = await db.taxSummaries.get(priorSession.id);
+  }
+
+  if (!summary?.openLots || summary.openLots.length === 0) return [];
+
+  // Only stored carry-ins with explicit cost basis suppress the snapshot.
+  const overrideKeys = new Set(
+    args.storedCarryIns
+      .filter((c) => c.costPerSharePln !== undefined)
+      .map((c) => carryInKey(c)),
+  );
+
+  const inherited: CarryInPosition[] = [];
+  for (const lot of summary.openLots) {
+    const key = carryInKey(lot);
+    if (overrideKeys.has(key)) continue;
+    inherited.push({
+      symbol: lot.symbol,
+      isin: lot.isin,
+      lotId: lot.lotId,
+      quantity: lot.quantity,
+      costPerSharePln: lot.costPerSharePln,
+      commissionPerSharePln: lot.commissionPerSharePln,
+      acquisitionDate: lot.acquisitionDate,
+      year: args.currentYear - 1,
+    });
+  }
+  return inherited;
+}
+
+function carryInKey(args: {
+  symbol: string;
+  isin?: string;
+  lotId?: string;
+}): string {
+  const base = (args.isin ?? args.symbol).toUpperCase();
+  return args.lotId ? `${base}::${args.lotId}` : base;
 }
 
 /** Clear calculated results for a session (keep parsed data) */
