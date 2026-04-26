@@ -410,5 +410,26 @@ void describe('InteractiveBrokersParser', () => {
       const result = parser.finish();
       assert.equal(result.dividends[0].isin, 'US0378331005');
     });
+
+    void it('backfills ISINs on carry-in positions from Mark-to-Market section', () => {
+      const parser = ibkrDefinition.createParser();
+      parser.feed({
+        line: 'Statement,Data,Period,"January 1, 2024 - December 31, 2024"',
+      });
+      // MtM appears before FII in real IBKR statements
+      parser.feed({
+        line: 'Mark-to-Market Performance Summary,Data,Stocks,NDIA,500,0,8.5870,--,412.8024,-25.008845,-3.77492,0,384.018635,',
+      });
+      parser.feed({
+        line: 'Financial Instrument Information,Data,Stocks,NDIA,ISHARES MSCI INDIA UCITS ETF,319495858,IE00BZCQB185,NDIA,LSEETF,1,ETF,',
+      });
+      const result = parser.finish();
+      assert.equal(result.carryInPositions.length, 1);
+      assert.equal(
+        result.carryInPositions[0].isin,
+        'IE00BZCQB185',
+        'Carry-in ISIN should be backfilled so it matches trade lots keyed by ISIN',
+      );
+    });
   });
 });
