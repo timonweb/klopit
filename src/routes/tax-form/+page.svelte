@@ -81,7 +81,7 @@
 
   // Auto-calculate on navigation when session has data but no results
   $effect(() => {
-    if (session && hasData && !pit38 && !calculating) {
+    if (session && hasData && !pit38 && !calculating && !error) {
       void runCalculation();
     }
   });
